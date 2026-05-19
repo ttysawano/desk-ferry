@@ -60,12 +60,28 @@ application crates are still placeholders for later stages.
 ## Mock Transport
 
 The mock binaries require local PSK and certificate files that are not committed
-to this repository. After setting `security.psk_file`, `security.cert_file`,
-`security.key_file`, and `security.server_fingerprint` in local config, run:
+to this repository. Copy the examples to ignored local files, then set
+`security.psk_file`, `security.cert_file`, `security.key_file`, and
+`security.server_fingerprint` in those local files.
 
 ```powershell
-cargo run -p desk-ferry-mock-server -- examples/server-windows.toml
-cargo run -p desk-ferry-mock-client -- examples/client-linux-x11.toml
+Copy-Item examples/server-windows.toml examples/server-windows.local.toml
+Copy-Item examples/client-linux-x11.toml examples/client-linux-x11.local.toml
+```
+
+The detailed PSK, certificate, and fingerprint generation steps are in
+`docs/testing.md`. On Windows with OpenSSL installed, the helper script can set
+up local ignored test files:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/dev/setup-stage2-mock-local.ps1
+```
+
+Then run:
+
+```powershell
+cargo run -p desk-ferry-mock-server -- examples/server-windows.local.toml
+cargo run -p desk-ferry-mock-client -- examples/client-linux-x11.local.toml
 ```
 
 The mock transport does not capture, suppress, or inject real input.

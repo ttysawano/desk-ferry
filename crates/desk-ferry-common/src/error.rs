@@ -16,4 +16,12 @@ pub enum DeskFerryError {
     InvalidJsonLine,
     #[error("invalid neighbor specification: {0}")]
     InvalidNeighborSpec(String),
+    #[error("authentication failed: {0}")]
+    Authentication(String),
+    #[error("security policy error: {0}")]
+    SecurityPolicy(String),
+    #[error("TLS error: {0}")]
+    Tls(String),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
 }

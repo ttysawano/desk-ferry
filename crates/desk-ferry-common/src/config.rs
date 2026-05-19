@@ -52,6 +52,12 @@ pub struct SecurityConfig {
     pub mode: SecurityMode,
     pub psk_file: String,
     pub allow_plaintext: bool,
+    #[serde(default)]
+    pub cert_file: Option<String>,
+    #[serde(default)]
+    pub key_file: Option<String>,
+    #[serde(default)]
+    pub server_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

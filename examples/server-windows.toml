@@ -11,6 +11,9 @@ port = 24800
 mode = "tls"
 psk_file = "./secret.psk"
 allow_plaintext = false
+# Stage 2 mock-server only. Keep real cert/key files outside the repository.
+# cert_file = "./local/server.crt"
+# key_file = "./local/server.key"
 
 [transition]
 entry_margin_px = 2
@@ -56,4 +59,3 @@ down = ""
 name = "host2"
 allowed = true
 expected_fingerprint = ""
-

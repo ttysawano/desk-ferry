@@ -45,6 +45,26 @@ pub struct HelloMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthChallenge {
+    pub protocol_version: u16,
+    pub nonce: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthResponse {
+    pub protocol_version: u16,
+    pub host_name: String,
+    pub hmac: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthResult {
+    pub protocol_version: u16,
+    pub success: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MouseMoveEvent {
     pub protocol_version: u16,
     pub dx: i32,
@@ -97,6 +117,9 @@ pub struct ReleaseAll {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProtocolMessage {
+    AuthChallenge(AuthChallenge),
+    AuthResponse(AuthResponse),
+    AuthResult(AuthResult),
     Hello(HelloMessage),
     MouseMove(MouseMoveEvent),
     MouseWarp(MouseWarpEvent),
@@ -110,6 +133,9 @@ pub enum ProtocolMessage {
 impl ProtocolMessage {
     pub fn protocol_version(&self) -> u16 {
         match self {
+            Self::AuthChallenge(message) => message.protocol_version,
+            Self::AuthResponse(message) => message.protocol_version,
+            Self::AuthResult(message) => message.protocol_version,
             Self::Hello(message) => message.protocol_version,
             Self::MouseMove(message) => message.protocol_version,
             Self::MouseWarp(message) => message.protocol_version,
@@ -144,4 +170,15 @@ pub fn decode_json_line(line: &str) -> Result<ProtocolMessage> {
         });
     }
     Ok(message)
+}
+
+pub fn is_input_event(message: &ProtocolMessage) -> bool {
+    matches!(
+        message,
+        ProtocolMessage::MouseMove(_)
+            | ProtocolMessage::MouseWarp(_)
+            | ProtocolMessage::MouseButton(_)
+            | ProtocolMessage::Key(_)
+            | ProtocolMessage::BoundaryRequest(_)
+    )
 }

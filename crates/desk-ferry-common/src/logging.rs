@@ -1,4 +1,7 @@
-use crate::protocol::{ProtocolMessage, CURRENT_PROTOCOL_VERSION};
+use crate::{
+    error::Result,
+    protocol::{decode_json_line, ProtocolMessage, CURRENT_PROTOCOL_VERSION},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SafeLogLevel {
@@ -26,6 +29,10 @@ impl SafeLogRecord {
 
 pub fn protocol_message_summary(message: &ProtocolMessage) -> SafeLogRecord {
     let summary = match message {
+        ProtocolMessage::AuthChallenge(_) => "auth challenge",
+        ProtocolMessage::AuthResponse(_) => "auth response",
+        ProtocolMessage::AuthResult(message) if message.success => "auth result success",
+        ProtocolMessage::AuthResult(_) => "auth result failure",
         ProtocolMessage::Hello(_) => "protocol hello",
         ProtocolMessage::MouseMove(_) => "mouse move event",
         ProtocolMessage::MouseWarp(_) => "mouse warp event",
@@ -48,4 +55,9 @@ pub fn redact_secret(value: &str) -> String {
     } else {
         "<redacted>".to_string()
     }
+}
+
+pub fn protocol_dump_summary(line: &str) -> Result<SafeLogRecord> {
+    let message = decode_json_line(line)?;
+    Ok(protocol_message_summary(&message))
 }

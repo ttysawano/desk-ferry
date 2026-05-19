@@ -1,0 +1,36 @@
+[host]
+name = "host2"
+role = "client"
+os = "linux-x11"
+
+[server]
+host = "192.168.1.10"
+port = 24800
+
+[security]
+mode = "tls"
+psk_file = "./secret.psk"
+allow_plaintext = false
+
+[display]
+allow_multi_display = false
+
+[transition]
+entry_margin_px = 2
+cooldown_ms = 150
+require_double_push = false
+edge_activation_delay_ms = 0
+
+[input]
+keyboard_mode = "physical_key"
+ime_sync = false
+
+[neighbors]
+left = "host1:right"
+right = ""
+up = ""
+down = ""
+
+[network]
+reconnect_interval_ms = 3000
+

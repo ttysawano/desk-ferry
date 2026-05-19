@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "crates/desk-ferry-common",
+    "crates/desk-ferry-server-windows",
+    "crates/desk-ferry-client-x11",
+    "crates/desk-ferry-mock-server",
+    "crates/desk-ferry-mock-client",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/sawan/desk-ferry"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+toml = "0.8"
+

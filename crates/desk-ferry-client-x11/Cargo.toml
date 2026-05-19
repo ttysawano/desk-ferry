@@ -1,0 +1,10 @@
+[package]
+name = "desk-ferry-client-x11"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+desk-ferry-common = { path = "../desk-ferry-common" }
+

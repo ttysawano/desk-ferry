@@ -3,7 +3,7 @@ use std::time::Duration;
 use desk_ferry_common::{DeskFerryError, Result};
 
 use crate::display::MonitorInfo;
-use crate::input::{InputEngine, InputMode, InputProcessResult};
+use crate::input::{EmergencyHotkey, InputEngine, InputMode, InputProcessResult, RawInputEvent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputHookConfig {
@@ -11,6 +11,13 @@ pub struct InputHookConfig {
     pub initial_active_host: Option<String>,
     pub mode: InputMode,
     pub duration: Option<Duration>,
+    pub emergency_hotkey: EmergencyHotkey,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HookInputResult {
+    pub event: RawInputEvent,
+    pub result: InputProcessResult,
 }
 
 #[cfg(windows)]
@@ -26,7 +33,7 @@ mod windows {
 
     use super::*;
     use crate::display::Rect;
-    use crate::input::{RawButtonState, RawInputEvent, RawKeyState};
+    use crate::input::{RawButtonState, RawKeyState};
     use desk_ferry_common::protocol::MouseButton;
 
     type Bool = i32;
@@ -151,7 +158,7 @@ mod windows {
 
     struct HookState {
         engine: InputEngine,
-        sender: mpsc::Sender<InputProcessResult>,
+        sender: mpsc::Sender<HookInputResult>,
         last_mouse_position: Option<(i32, i32)>,
     }
 
@@ -234,13 +241,25 @@ mod windows {
 
     pub fn run_input_hooks(
         config: InputHookConfig,
-        mut on_result: impl FnMut(InputProcessResult),
+        on_result: impl FnMut(HookInputResult),
+    ) -> Result<()> {
+        run_input_hooks_with_tick(config, on_result, || Ok(()))
+    }
+
+    pub fn run_input_hooks_with_tick(
+        config: InputHookConfig,
+        mut on_result: impl FnMut(HookInputResult),
+        mut on_tick: impl FnMut() -> Result<()>,
     ) -> Result<()> {
         let (sender, receiver) = mpsc::channel();
-        let mut engine = InputEngine::new(config.server_host, config.mode);
+        let mut engine =
+            InputEngine::new_with_hotkey(config.server_host, config.mode, config.emergency_hotkey);
         if let Some(active_host) = config.initial_active_host {
             let result = engine.set_active_host(active_host);
-            on_result(result);
+            on_result(HookInputResult {
+                event: RawInputEvent::SyntheticStateChange,
+                result,
+            });
         }
 
         let state = HOOK_STATE.get_or_init(|| Mutex::new(None));
@@ -265,6 +284,7 @@ mod windows {
             while let Ok(result) = receiver.try_recv() {
                 on_result(result);
             }
+            on_tick()?;
             if duration.is_some_and(|duration| started.elapsed() >= duration) {
                 break;
             }
@@ -372,7 +392,12 @@ mod windows {
                     .map(|previous| (current.0 - previous.0, current.1 - previous.1))
                     .unwrap_or((0, 0));
                 hook_state.last_mouse_position = Some(current);
-                Some(RawInputEvent::MouseMove { dx, dy })
+                Some(RawInputEvent::MouseMove {
+                    x: current.0,
+                    y: current.1,
+                    dx,
+                    dy,
+                })
             }
             WM_LBUTTONDOWN => Some(mouse_button(MouseButton::Left, RawButtonState::Pressed)),
             WM_LBUTTONUP => Some(mouse_button(MouseButton::Left, RawButtonState::Released)),
@@ -422,7 +447,7 @@ mod windows {
         };
         let result = hook_state.engine.handle_event(event);
         let suppress = result.suppress_input;
-        let _ = hook_state.sender.send(result);
+        let _ = hook_state.sender.send(HookInputResult { event, result });
         suppress
     }
 
@@ -451,6 +476,8 @@ mod windows {
 pub use windows::enumerate_monitors;
 #[cfg(windows)]
 pub use windows::run_input_hooks;
+#[cfg(windows)]
+pub use windows::run_input_hooks_with_tick;
 
 #[cfg(not(windows))]
 pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>> {
@@ -462,7 +489,18 @@ pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>> {
 #[cfg(not(windows))]
 pub fn run_input_hooks(
     _config: InputHookConfig,
-    _on_result: impl FnMut(InputProcessResult),
+    _on_result: impl FnMut(HookInputResult),
+) -> Result<()> {
+    Err(DeskFerryError::ConfigValidation(
+        "Windows input hooks are only available on Windows".to_string(),
+    ))
+}
+
+#[cfg(not(windows))]
+pub fn run_input_hooks_with_tick(
+    _config: InputHookConfig,
+    _on_result: impl FnMut(HookInputResult),
+    _on_tick: impl FnMut() -> Result<()>,
 ) -> Result<()> {
     Err(DeskFerryError::ConfigValidation(
         "Windows input hooks are only available on Windows".to_string(),

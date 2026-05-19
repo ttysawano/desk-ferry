@@ -2,6 +2,7 @@ use std::{env, fs, net::TcpStream};
 
 use desk_ferry_common::{
     config::load_config_file,
+    logging::protocol_message_summary,
     mock::MockClientSession,
     protocol::{BoundaryRequest, Edge, ProtocolMessage, CURRENT_PROTOCOL_VERSION},
     security::Psk,
@@ -74,6 +75,10 @@ fn run() -> Result<()> {
     loop {
         let message = read_message(&mut stream)?;
         session.receive_message(&message)?;
+        println!(
+            "desk-ferry-mock-client: received {}",
+            protocol_message_summary(&message).message
+        );
         if matches!(message, ProtocolMessage::ReleaseAll(_)) {
             break;
         }

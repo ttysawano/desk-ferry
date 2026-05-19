@@ -1,9 +1,11 @@
 use std::collections::BTreeSet;
+use std::str::FromStr;
 
 use desk_ferry_common::protocol::{
     ActiveHostChanged, ButtonState, KeyEvent, KeyState, MouseButton, MouseButtonEvent,
     MouseMoveEvent, ProtocolMessage, ReleaseAll, CURRENT_PROTOCOL_VERSION,
 };
+use desk_ferry_common::{DeskFerryError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -26,6 +28,8 @@ pub enum RawKeyState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawInputEvent {
     MouseMove {
+        x: i32,
+        y: i32,
         dx: i32,
         dy: i32,
     },
@@ -40,6 +44,7 @@ pub enum RawInputEvent {
         key_code: u32,
         state: RawKeyState,
     },
+    SyntheticStateChange,
     Disconnect,
 }
 
@@ -72,14 +77,25 @@ pub struct InputEngine {
     mode: InputMode,
     server_host: String,
     active_host: String,
+    emergency_hotkey: EmergencyHotkey,
     pressed_keys: BTreeSet<u32>,
     pressed_mouse_buttons: Vec<MouseButton>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmergencyHotkey {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub trigger_key_code: u32,
 }
 
 const VK_SHIFT: u32 = 0x10;
 const VK_CONTROL: u32 = 0x11;
 const VK_MENU: u32 = 0x12;
 const VK_ESCAPE: u32 = 0x1B;
+const VK_F1: u32 = 0x70;
+const VK_F24: u32 = 0x87;
 const VK_LSHIFT: u32 = 0xA0;
 const VK_RSHIFT: u32 = 0xA1;
 const VK_LCONTROL: u32 = 0xA2;
@@ -89,11 +105,20 @@ const VK_RMENU: u32 = 0xA5;
 
 impl InputEngine {
     pub fn new(server_host: impl Into<String>, mode: InputMode) -> Self {
+        Self::new_with_hotkey(server_host, mode, EmergencyHotkey::default())
+    }
+
+    pub fn new_with_hotkey(
+        server_host: impl Into<String>,
+        mode: InputMode,
+        emergency_hotkey: EmergencyHotkey,
+    ) -> Self {
         let server_host = server_host.into();
         Self {
             mode,
             active_host: server_host.clone(),
             server_host,
+            emergency_hotkey,
             pressed_keys: BTreeSet::new(),
             pressed_mouse_buttons: Vec::new(),
         }
@@ -123,10 +148,14 @@ impl InputEngine {
 
     pub fn handle_event(&mut self, event: RawInputEvent) -> InputProcessResult {
         match event {
-            RawInputEvent::MouseMove { dx, dy } => self.handle_mouse_move(dx, dy),
+            RawInputEvent::MouseMove { dx, dy, .. } => self.handle_mouse_move(dx, dy),
             RawInputEvent::MouseButton { button, state } => self.handle_mouse_button(button, state),
             RawInputEvent::MouseWheel { delta } => self.handle_mouse_wheel(delta),
             RawInputEvent::Key { key_code, state } => self.handle_key(key_code, state),
+            RawInputEvent::SyntheticStateChange => InputProcessResult {
+                suppress_input: false,
+                actions: Vec::new(),
+            },
             RawInputEvent::Disconnect => self.handle_disconnect(),
         }
     }
@@ -297,15 +326,81 @@ impl InputEngine {
 
     fn is_emergency_hotkey(&self, key_code: u32, state: RawKeyState) -> bool {
         state == RawKeyState::Pressed
-            && key_code == VK_ESCAPE
-            && self.any_pressed([VK_CONTROL, VK_LCONTROL, VK_RCONTROL])
-            && self.any_pressed([VK_MENU, VK_LMENU, VK_RMENU])
-            && self.any_pressed([VK_SHIFT, VK_LSHIFT, VK_RSHIFT])
+            && key_code == self.emergency_hotkey.trigger_key_code
+            && (!self.emergency_hotkey.ctrl
+                || self.any_pressed([VK_CONTROL, VK_LCONTROL, VK_RCONTROL]))
+            && (!self.emergency_hotkey.alt || self.any_pressed([VK_MENU, VK_LMENU, VK_RMENU]))
+            && (!self.emergency_hotkey.shift || self.any_pressed([VK_SHIFT, VK_LSHIFT, VK_RSHIFT]))
     }
 
     fn any_pressed<const N: usize>(&self, keys: [u32; N]) -> bool {
         keys.iter().any(|key| self.pressed_keys.contains(key))
     }
+}
+
+impl Default for EmergencyHotkey {
+    fn default() -> Self {
+        Self {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            trigger_key_code: VK_ESCAPE,
+        }
+    }
+}
+
+impl FromStr for EmergencyHotkey {
+    type Err = DeskFerryError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        let mut ctrl = false;
+        let mut alt = false;
+        let mut shift = false;
+        let mut trigger_key_code = None;
+
+        for raw_part in value.split('+') {
+            let part = raw_part.trim();
+            if part.is_empty() {
+                return invalid_hotkey(value);
+            }
+            match part.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => ctrl = true,
+                "alt" => alt = true,
+                "shift" => shift = true,
+                "esc" | "escape" => trigger_key_code = Some(VK_ESCAPE),
+                key if key.starts_with('f') => {
+                    let number = key[1..].parse::<u32>().map_err(|_| {
+                        DeskFerryError::ConfigValidation(
+                            "input.emergency_hotkey has an unsupported trigger key".to_string(),
+                        )
+                    })?;
+                    let code = VK_F1 + number.saturating_sub(1);
+                    if !(VK_F1..=VK_F24).contains(&code) || number == 0 {
+                        return invalid_hotkey(value);
+                    }
+                    trigger_key_code = Some(code);
+                }
+                _ => return invalid_hotkey(value),
+            }
+        }
+
+        Ok(Self {
+            ctrl,
+            alt,
+            shift,
+            trigger_key_code: trigger_key_code.ok_or_else(|| {
+                DeskFerryError::ConfigValidation(
+                    "input.emergency_hotkey requires a trigger key".to_string(),
+                )
+            })?,
+        })
+    }
+}
+
+fn invalid_hotkey<T>(value: &str) -> Result<T> {
+    Err(DeskFerryError::ConfigValidation(format!(
+        "unsupported input.emergency_hotkey '{value}'"
+    )))
 }
 
 pub fn release_all(reason: impl Into<String>) -> ProtocolMessage {
@@ -341,7 +436,12 @@ mod tests {
     #[test]
     fn mouse_event_is_converted_when_client_is_active() {
         let mut engine = client_engine(InputMode::DryRun);
-        let result = engine.handle_event(RawInputEvent::MouseMove { dx: 4, dy: -2 });
+        let result = engine.handle_event(RawInputEvent::MouseMove {
+            x: 10,
+            y: 20,
+            dx: 4,
+            dy: -2,
+        });
 
         assert!(!result.suppress_input);
         assert!(matches!(
@@ -412,7 +512,12 @@ mod tests {
     #[test]
     fn dry_run_mode_never_suppresses_input() {
         let mut engine = client_engine(InputMode::DryRun);
-        let result = engine.handle_event(RawInputEvent::MouseMove { dx: 1, dy: 0 });
+        let result = engine.handle_event(RawInputEvent::MouseMove {
+            x: 10,
+            y: 20,
+            dx: 1,
+            dy: 0,
+        });
 
         assert!(!result.suppress_input);
     }
@@ -423,12 +528,22 @@ mod tests {
         let mut suppress = client_engine(InputMode::Suppress);
 
         assert!(
-            !dry.handle_event(RawInputEvent::MouseMove { dx: 1, dy: 0 })
-                .suppress_input
+            !dry.handle_event(RawInputEvent::MouseMove {
+                x: 10,
+                y: 20,
+                dx: 1,
+                dy: 0,
+            })
+            .suppress_input
         );
         assert!(
             suppress
-                .handle_event(RawInputEvent::MouseMove { dx: 1, dy: 0 })
+                .handle_event(RawInputEvent::MouseMove {
+                    x: 10,
+                    y: 20,
+                    dx: 1,
+                    dy: 0,
+                })
                 .suppress_input
         );
     }
@@ -465,6 +580,37 @@ mod tests {
             .actions
             .iter()
             .any(|action| matches!(action.message, Some(ProtocolMessage::ReleaseAll(_)))));
+    }
+
+    #[test]
+    fn emergency_hotkey_can_be_configured_to_f12() {
+        let hotkey = "Ctrl+Alt+Shift+F12"
+            .parse::<EmergencyHotkey>()
+            .expect("hotkey");
+        let mut engine = InputEngine::new_with_hotkey("host1", InputMode::DryRun, hotkey);
+        engine.set_active_host("host2");
+        engine.handle_event(RawInputEvent::Key {
+            key_code: VK_CONTROL,
+            state: RawKeyState::Pressed,
+        });
+        engine.handle_event(RawInputEvent::Key {
+            key_code: VK_MENU,
+            state: RawKeyState::Pressed,
+        });
+        engine.handle_event(RawInputEvent::Key {
+            key_code: VK_SHIFT,
+            state: RawKeyState::Pressed,
+        });
+        let result = engine.handle_event(RawInputEvent::Key {
+            key_code: VK_F1 + 11,
+            state: RawKeyState::Pressed,
+        });
+
+        assert_eq!(engine.active_host(), "host1");
+        assert!(result
+            .actions
+            .iter()
+            .any(|action| action.kind == InputActionKind::EmergencyHotkeyDetected));
     }
 
     #[test]

@@ -13,7 +13,10 @@ use desk_ferry_common::{
     mock::MockServerSession,
     protocol::ProtocolMessage,
     security::Psk,
-    transport::{accept_tls, read_message, send_message, server_config_from_pem},
+    transport::{
+        accept_tls, is_graceful_disconnect_error, read_message, send_message,
+        server_config_from_pem,
+    },
     DeskFerryError, Result,
 };
 use desk_ferry_server_windows::{
@@ -212,6 +215,7 @@ fn serve_input_dry_run(args: &Args) -> Result<()> {
         server_state,
         started: Instant::now(),
         duration,
+        disconnected: false,
     }));
     let hook_runtime = Rc::clone(&runtime);
     let tick_runtime = Rc::clone(&runtime);
@@ -232,8 +236,10 @@ fn serve_input_dry_run(args: &Args) -> Result<()> {
         move || tick_runtime.borrow_mut().tick(),
     )?;
 
-    let result = runtime.borrow_mut().server_state.handle_disconnect();
-    let _ = send_server_result(&mut runtime.borrow_mut().stream, result);
+    if !runtime.borrow().disconnected {
+        let result = runtime.borrow_mut().server_state.handle_disconnect();
+        let _ = runtime.borrow_mut().send_server_result(result);
+    }
 
     Ok(())
 }
@@ -243,18 +249,25 @@ struct ServerRuntime {
     server_state: WindowsServerIntegration,
     started: Instant,
     duration: Option<Duration>,
+    disconnected: bool,
 }
 
 impl ServerRuntime {
     fn handle_hook_result(&mut self, hook_result: HookInputResult) -> Result<()> {
+        if self.disconnected {
+            return Ok(());
+        }
         let now_ms = self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let result = self
             .server_state
             .handle_local_input(hook_result.event, now_ms)?;
-        send_server_result(&mut self.stream, result)
+        self.send_server_result(result)
     }
 
     fn tick(&mut self) -> Result<()> {
+        if self.disconnected {
+            return Ok(());
+        }
         if self
             .duration
             .is_some_and(|duration| self.started.elapsed() >= duration)
@@ -265,17 +278,29 @@ impl ServerRuntime {
         match read_message(&mut self.stream) {
             Ok(message) => {
                 let result = self.server_state.handle_client_message(message)?;
-                send_server_result(&mut self.stream, result)?;
+                self.send_server_result(result)?;
             }
             Err(DeskFerryError::Io(error))
                 if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
-            Err(DeskFerryError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof => {
+            Err(error) if is_graceful_disconnect_error(&error) => {
                 let result = self.server_state.handle_disconnect();
-                send_server_result(&mut self.stream, result)?;
+                self.send_server_result(result)?;
+                self.disconnected = true;
             }
             Err(error) => return Err(error),
         }
         Ok(())
+    }
+
+    fn send_server_result(&mut self, result: ServerEventResult) -> Result<()> {
+        match send_server_result(&mut self.stream, result) {
+            Ok(()) => Ok(()),
+            Err(error) if is_graceful_disconnect_error(&error) => {
+                self.disconnected = true;
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 

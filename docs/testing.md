@@ -28,6 +28,17 @@ Stage 2 coverage:
 - authenticated state and active host transitions are tracked
 - disconnect returns active host to the server and produces `release_all`
 - safe logs and protocol dump summaries do not expose PSKs, HMACs, key codes, or concrete keystrokes
+- graceful disconnect classification covers connection reset, connection aborted,
+  broken pipe, and unexpected EOF
+
+Stage 3C Windows server dry-run coverage:
+
+- emergency hotkey returns active host to the server and produces one `release_all`
+- emergency trigger key is not forwarded to the client
+- disconnect fail-safe is idempotent after emergency
+- disconnect while already on the server with no pressed input does not regenerate
+  `active_host_changed` or `release_all`
+- safe log summaries do not expose concrete key names, key codes, or typed input
 
 Run:
 

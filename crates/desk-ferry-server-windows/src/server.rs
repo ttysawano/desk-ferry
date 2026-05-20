@@ -176,6 +176,9 @@ impl WindowsServerIntegration {
                 InputActionKind::ConnectionDisconnected => {
                     log_events.push("client disconnected");
                 }
+                InputActionKind::ConnectionDisconnectedAlreadySafe => {
+                    log_events.push("client disconnected; already safe");
+                }
             }
 
             if let Some(message) = action.message {
@@ -457,6 +460,51 @@ expected_fingerprint = ""
     }
 
     #[test]
+    fn emergency_trigger_key_is_not_forwarded_to_client() {
+        let mut server = server();
+        server.register_authenticated_client("host2");
+        server
+            .handle_local_input(
+                RawInputEvent::MouseMove {
+                    x: 1919,
+                    y: 540,
+                    dx: 1,
+                    dy: 0,
+                },
+                1_000,
+            )
+            .expect("transition");
+        for key_code in [VK_CONTROL, VK_MENU, VK_SHIFT] {
+            server
+                .handle_local_input(
+                    RawInputEvent::Key {
+                        key_code,
+                        state: RawKeyState::Pressed,
+                    },
+                    1_100,
+                )
+                .expect("modifier key");
+        }
+
+        let result = server
+            .handle_local_input(
+                RawInputEvent::Key {
+                    key_code: VK_F12,
+                    state: RawKeyState::Pressed,
+                },
+                1_200,
+            )
+            .expect("emergency key");
+
+        assert!(result.log_events.contains(&"emergency hotkey detected"));
+        assert!(!result.log_events.contains(&"key event forwarded"));
+        assert!(!result
+            .messages
+            .iter()
+            .any(|message| matches!(message, ProtocolMessage::Key(_))));
+    }
+
+    #[test]
     fn disconnect_returns_to_server_and_generates_release_all() {
         let mut server = server();
         server.register_authenticated_client("host2");
@@ -479,5 +527,51 @@ expected_fingerprint = ""
             .messages
             .iter()
             .any(|message| matches!(message, ProtocolMessage::ReleaseAll(_))));
+    }
+
+    #[test]
+    fn emergency_then_disconnect_is_already_safe() {
+        let mut server = server();
+        server.register_authenticated_client("host2");
+        server
+            .handle_local_input(
+                RawInputEvent::MouseMove {
+                    x: 1919,
+                    y: 540,
+                    dx: 1,
+                    dy: 0,
+                },
+                1_000,
+            )
+            .expect("transition");
+        for key_code in [VK_CONTROL, VK_MENU, VK_SHIFT, VK_F12] {
+            server
+                .handle_local_input(
+                    RawInputEvent::Key {
+                        key_code,
+                        state: RawKeyState::Pressed,
+                    },
+                    1_100,
+                )
+                .expect("key");
+        }
+
+        let result = server.handle_disconnect();
+
+        assert_eq!(server.active_host(), "host1");
+        assert_eq!(result.log_events, vec!["client disconnected; already safe"]);
+        assert!(result.messages.is_empty());
+    }
+
+    #[test]
+    fn disconnect_when_server_is_active_and_inputs_are_empty_is_already_safe() {
+        let mut server = server();
+        server.register_authenticated_client("host2");
+
+        let result = server.handle_disconnect();
+
+        assert_eq!(server.active_host(), "host1");
+        assert_eq!(result.log_events, vec!["client disconnected; already safe"]);
+        assert!(result.messages.is_empty());
     }
 }

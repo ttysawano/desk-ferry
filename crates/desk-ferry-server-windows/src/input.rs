@@ -58,6 +58,7 @@ pub enum InputActionKind {
     ActiveHostChanged,
     ReleaseAllGenerated,
     ConnectionDisconnected,
+    ConnectionDisconnectedAlreadySafe,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -273,54 +274,72 @@ impl InputEngine {
     }
 
     fn handle_emergency(&mut self) -> InputProcessResult {
+        let needs_active_host_changed = self.active_host != self.server_host;
+        let needs_release_all = needs_active_host_changed
+            || !self.pressed_keys.is_empty()
+            || !self.pressed_mouse_buttons.is_empty();
         self.active_host = self.server_host.clone();
         self.pressed_keys.clear();
         self.pressed_mouse_buttons.clear();
+        let mut actions = vec![InputAction {
+            kind: InputActionKind::EmergencyHotkeyDetected,
+            message: None,
+        }];
+        if needs_active_host_changed {
+            actions.push(InputAction {
+                kind: InputActionKind::ActiveHostChanged,
+                message: Some(ProtocolMessage::ActiveHostChanged(ActiveHostChanged {
+                    protocol_version: CURRENT_PROTOCOL_VERSION,
+                    active_host: self.server_host.clone(),
+                })),
+            });
+        }
+        if needs_release_all {
+            actions.push(InputAction {
+                kind: InputActionKind::ReleaseAllGenerated,
+                message: Some(release_all("emergency")),
+            });
+        }
         InputProcessResult {
             suppress_input: false,
-            actions: vec![
-                InputAction {
-                    kind: InputActionKind::EmergencyHotkeyDetected,
-                    message: None,
-                },
-                InputAction {
-                    kind: InputActionKind::ActiveHostChanged,
-                    message: Some(ProtocolMessage::ActiveHostChanged(ActiveHostChanged {
-                        protocol_version: CURRENT_PROTOCOL_VERSION,
-                        active_host: self.server_host.clone(),
-                    })),
-                },
-                InputAction {
-                    kind: InputActionKind::ReleaseAllGenerated,
-                    message: Some(release_all("emergency")),
-                },
-            ],
+            actions,
         }
     }
 
     fn handle_disconnect(&mut self) -> InputProcessResult {
+        let needs_active_host_changed = self.active_host != self.server_host;
+        let needs_release_all = needs_active_host_changed
+            || !self.pressed_keys.is_empty()
+            || !self.pressed_mouse_buttons.is_empty();
         self.active_host = self.server_host.clone();
         self.pressed_keys.clear();
         self.pressed_mouse_buttons.clear();
+        let mut actions = vec![InputAction {
+            kind: if needs_active_host_changed || needs_release_all {
+                InputActionKind::ConnectionDisconnected
+            } else {
+                InputActionKind::ConnectionDisconnectedAlreadySafe
+            },
+            message: None,
+        }];
+        if needs_active_host_changed {
+            actions.push(InputAction {
+                kind: InputActionKind::ActiveHostChanged,
+                message: Some(ProtocolMessage::ActiveHostChanged(ActiveHostChanged {
+                    protocol_version: CURRENT_PROTOCOL_VERSION,
+                    active_host: self.server_host.clone(),
+                })),
+            });
+        }
+        if needs_release_all {
+            actions.push(InputAction {
+                kind: InputActionKind::ReleaseAllGenerated,
+                message: Some(release_all("disconnect")),
+            });
+        }
         InputProcessResult {
             suppress_input: false,
-            actions: vec![
-                InputAction {
-                    kind: InputActionKind::ConnectionDisconnected,
-                    message: None,
-                },
-                InputAction {
-                    kind: InputActionKind::ActiveHostChanged,
-                    message: Some(ProtocolMessage::ActiveHostChanged(ActiveHostChanged {
-                        protocol_version: CURRENT_PROTOCOL_VERSION,
-                        active_host: self.server_host.clone(),
-                    })),
-                },
-                InputAction {
-                    kind: InputActionKind::ReleaseAllGenerated,
-                    message: Some(release_all("disconnect")),
-                },
-            ],
+            actions,
         }
     }
 
@@ -420,6 +439,7 @@ pub fn safe_action_summary(action: &InputAction) -> &'static str {
         InputActionKind::ActiveHostChanged => "active_host changed",
         InputActionKind::ReleaseAllGenerated => "release_all generated",
         InputActionKind::ConnectionDisconnected => "connection disconnected",
+        InputActionKind::ConnectionDisconnectedAlreadySafe => "client disconnected; already safe",
     }
 }
 
@@ -583,6 +603,37 @@ mod tests {
     }
 
     #[test]
+    fn emergency_hotkey_trigger_key_is_not_forwarded() {
+        let mut engine = client_engine(InputMode::DryRun);
+        engine.handle_event(RawInputEvent::Key {
+            key_code: VK_CONTROL,
+            state: RawKeyState::Pressed,
+        });
+        engine.handle_event(RawInputEvent::Key {
+            key_code: VK_MENU,
+            state: RawKeyState::Pressed,
+        });
+        engine.handle_event(RawInputEvent::Key {
+            key_code: VK_SHIFT,
+            state: RawKeyState::Pressed,
+        });
+
+        let result = engine.handle_event(RawInputEvent::Key {
+            key_code: VK_ESCAPE,
+            state: RawKeyState::Pressed,
+        });
+
+        assert!(!result
+            .actions
+            .iter()
+            .any(|action| action.kind == InputActionKind::KeyDetected));
+        assert!(!result
+            .actions
+            .iter()
+            .any(|action| matches!(action.message, Some(ProtocolMessage::Key(_)))));
+    }
+
+    #[test]
     fn emergency_hotkey_can_be_configured_to_f12() {
         let hotkey = "Ctrl+Alt+Shift+F12"
             .parse::<EmergencyHotkey>()
@@ -632,6 +683,55 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_when_already_safe_does_not_regenerate_fail_safe_messages() {
+        let mut engine = InputEngine::new("host1", InputMode::DryRun);
+
+        let result = engine.handle_event(RawInputEvent::Disconnect);
+
+        assert_eq!(engine.active_host(), "host1");
+        assert_eq!(engine.pressed_key_count(), 0);
+        assert_eq!(engine.pressed_mouse_button_count(), 0);
+        assert!(result
+            .actions
+            .iter()
+            .any(|action| action.kind == InputActionKind::ConnectionDisconnectedAlreadySafe));
+        assert!(!result
+            .actions
+            .iter()
+            .any(|action| action.kind == InputActionKind::ActiveHostChanged));
+        assert!(!result
+            .actions
+            .iter()
+            .any(|action| action.kind == InputActionKind::ReleaseAllGenerated));
+    }
+
+    #[test]
+    fn emergency_then_disconnect_does_not_generate_release_all_twice() {
+        let mut engine = client_engine(InputMode::DryRun);
+        for key_code in [VK_CONTROL, VK_MENU, VK_SHIFT, VK_ESCAPE] {
+            engine.handle_event(RawInputEvent::Key {
+                key_code,
+                state: RawKeyState::Pressed,
+            });
+        }
+
+        let result = engine.handle_event(RawInputEvent::Disconnect);
+
+        assert!(result
+            .actions
+            .iter()
+            .any(|action| action.kind == InputActionKind::ConnectionDisconnectedAlreadySafe));
+        assert!(!result
+            .actions
+            .iter()
+            .any(|action| matches!(action.message, Some(ProtocolMessage::ReleaseAll(_)))));
+        assert!(!result
+            .actions
+            .iter()
+            .any(|action| matches!(action.message, Some(ProtocolMessage::ActiveHostChanged(_)))));
+    }
+
+    #[test]
     fn safe_log_summary_does_not_include_key_details() {
         let action = InputAction {
             kind: InputActionKind::KeyDetected,
@@ -646,5 +746,20 @@ mod tests {
 
         assert_eq!(summary, "key event detected");
         assert!(!summary.contains("65"));
+    }
+
+    #[test]
+    fn safe_disconnect_summary_does_not_include_key_details() {
+        let action = InputAction {
+            kind: InputActionKind::ConnectionDisconnectedAlreadySafe,
+            message: None,
+        };
+
+        let summary = safe_action_summary(&action);
+
+        assert_eq!(summary, "client disconnected; already safe");
+        assert!(!summary.contains("65"));
+        assert!(!summary.contains("F12"));
+        assert!(!summary.contains("Ctrl"));
     }
 }

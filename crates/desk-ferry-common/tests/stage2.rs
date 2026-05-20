@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io;
 
 use desk_ferry_common::{
     config::ClientConfig,
@@ -16,6 +17,7 @@ use desk_ferry_common::{
         new_auth_challenge, normalize_fingerprint, verify_fingerprint, verify_psk_hmac, Psk,
     },
     state::ConnectionState,
+    transport::is_graceful_disconnect_error,
 };
 
 fn psk() -> Psk {
@@ -314,4 +316,23 @@ fn safe_logs_do_not_expose_psk_hmac_or_key_details() {
         .message;
     assert!(dump.contains("key event"));
     assert!(!dump.contains("30"));
+}
+
+#[test]
+fn graceful_disconnect_errors_are_classified() {
+    for kind in [
+        io::ErrorKind::UnexpectedEof,
+        io::ErrorKind::ConnectionReset,
+        io::ErrorKind::ConnectionAborted,
+        io::ErrorKind::BrokenPipe,
+    ] {
+        let error = DeskFerryError::Io(io::Error::new(kind, "disconnect"));
+        assert!(is_graceful_disconnect_error(&error));
+    }
+
+    let windows_reset = DeskFerryError::Io(io::Error::from_raw_os_error(10053));
+    assert!(is_graceful_disconnect_error(&windows_reset));
+
+    let other = DeskFerryError::Io(io::Error::new(io::ErrorKind::PermissionDenied, "denied"));
+    assert!(!is_graceful_disconnect_error(&other));
 }

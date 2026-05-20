@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufReader, Read, Write},
+    io::{BufReader, ErrorKind, Read, Write},
     net::TcpStream,
     path::Path,
     sync::Arc,
@@ -173,4 +173,18 @@ pub fn read_message(stream: &mut impl Read) -> Result<ProtocolMessage> {
     }
     let line = String::from_utf8(bytes).map_err(|_| DeskFerryError::InvalidJsonLine)?;
     decode_json_line(&line)
+}
+
+pub fn is_graceful_disconnect_error(error: &DeskFerryError) -> bool {
+    let DeskFerryError::Io(error) = error else {
+        return false;
+    };
+
+    matches!(
+        error.kind(),
+        ErrorKind::UnexpectedEof
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::BrokenPipe
+    ) || error.raw_os_error() == Some(10053)
 }
